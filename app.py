@@ -13,9 +13,8 @@ st.set_page_config(
     layout="centered",
 )
 
-
 # -----------------------------------------------------------------------------
-# 1) Dropbox client + paths
+# 1) Dropbox client + paths (same secrets as previous app)
 # -----------------------------------------------------------------------------
 dbx = dropbox.Dropbox(
     app_key=st.secrets["DROPBOX_APP_KEY"],
@@ -36,8 +35,14 @@ def download_from_dropbox(local_file: str = LOCAL_TSV_PATH) -> bool:
     """Download TSV from Dropbox to local file. Returns True if successful."""
     try:
         _md, res = dbx.files_download(REMOTE_TSV_PATH)
-    except ApiError:
-        # File not found yet -> treat as first run
+    except ApiError as e:
+        # Most common: file doesn't exist yet OR wrong path/permission.
+        # We treat "not found" as first run; everything else we warn about.
+        st.warning(
+            "No Dropbox TSV found (or download failed) — using local file (or creating a new one)."
+        )
+        # If you want more detail, temporarily uncomment:
+        # st.warning(f"Dropbox download ApiError: {e}")
         return False
     except Exception as e:
         st.warning(f"Could not download TSV from Dropbox: {e}")
@@ -49,7 +54,7 @@ def download_from_dropbox(local_file: str = LOCAL_TSV_PATH) -> bool:
 
 
 def upload_to_dropbox(local_file: str = LOCAL_TSV_PATH) -> bool:
-    """Upload local TSV to Dropbox at REMOTE_TSV_PATH."""
+    """Upload local TSV to Dropbox at REMOTE_TSV_PATH (overwrite)."""
     try:
         with open(local_file, "rb") as f:
             dbx.files_upload(
@@ -72,7 +77,6 @@ def load_tsv(local_file: str = LOCAL_TSV_PATH) -> pd.DataFrame:
         try:
             df = pd.read_csv(local_file, sep="\t", dtype=str)
         except Exception:
-            # If file exists but is malformed, fall back to empty
             df = pd.DataFrame(columns=COLUMNS)
     else:
         df = pd.DataFrame(columns=COLUMNS)
@@ -81,13 +85,12 @@ def load_tsv(local_file: str = LOCAL_TSV_PATH) -> pd.DataFrame:
     for col in COLUMNS:
         if col not in df.columns:
             df[col] = pd.NA
-    df = df[COLUMNS].astype(str)
+    df = df[COLUMNS]
     return df
 
 
 def save_tsv(df: pd.DataFrame, local_file: str = LOCAL_TSV_PATH) -> None:
-    df = df.copy()
-    df = df[COLUMNS]
+    df = df.copy()[COLUMNS]
     df.to_csv(local_file, sep="\t", index=False, encoding="utf-8")
 
 
@@ -99,16 +102,9 @@ def append_submission(name: str, song1: str, song2: str) -> bool:
     - save locally as TSV
     - upload back to Dropbox (overwrite remote)
     """
-    # Always try to fetch latest before appending (basic safeguard for multiple users)
-    downloaded = download_from_dropbox(LOCAL_TSV_PATH)
-    if downloaded:
-        st.info("Loaded latest TSV from Dropbox.")
-    else:
-        # Not fatal; it may be first run, or transient failure
-        st.warning("No Dropbox TSV found (or download failed) — using local file (or creating a new one).")
+    download_from_dropbox(LOCAL_TSV_PATH)  # best-effort
 
     df = load_tsv(LOCAL_TSV_PATH)
-
     new_row = pd.DataFrame([{"Name": name, "Song1": song1, "Song2": song2}])
     df = pd.concat([df, new_row], ignore_index=True)
 
@@ -123,62 +119,43 @@ st.title("Song Submission")
 
 st.markdown(
     """
-**Instructions:** Enter a name you want and **2 song names** approximately in this format:
+**Instructions:** Enter a name you want (can also be a fantasy name, submissions are anonymous) and **2 song names** approximately in this format:
 
 `Title - Interpret`
-
-Fill out:
-
-- **Name**
-- **Song1**
-- **Song2**
 """
 )
 
-# Initialize defaults
-st.session_state.setdefault("name", "")
-st.session_state.setdefault("song1", "")
-st.session_state.setdefault("song2", "")
+# Form avoids the session_state reset error, and `clear_on_submit=True` clears inputs automatically.
+with st.form("song_form", clear_on_submit=True):
+    name = st.text_input("Name", placeholder="e.g., Max")
+    song1 = st.text_input("Song1", placeholder="e.g., Song Title - Artist")
+    song2 = st.text_input("Song2", placeholder="e.g., Song Title - Artist")
+    submitted = st.form_submit_button("Submit", type="primary")
 
-name = st.text_input("Name", key="name", placeholder="e.g., Max")
-song1 = st.text_input("Song1", key="song1", placeholder="e.g., Song Title - Artist")
-song2 = st.text_input("Song2", key="song2", placeholder="e.g., Song Title - Artist")
-
-# Gentle format hints (not strict)
-format_warnings = []
-if song1.strip() and "-" not in song1:
-    format_warnings.append("Song1 doesn’t contain a '-' (expected: Title - Interpret).")
-if song2.strip() and "-" not in song2:
-    format_warnings.append("Song2 doesn’t contain a '-' (expected: Title - Interpret).")
-if format_warnings:
-    st.warning(" ".join(format_warnings))
-
-submit = st.button("Submit", type="primary")
-
-if submit:
-    clean_name = name.strip()
-    clean_song1 = song1.strip()
-    clean_song2 = song2.strip()
+if submitted:
+    clean_name = (name or "").strip()
+    clean_song1 = (song1 or "").strip()
+    clean_song2 = (song2 or "").strip()
 
     if not clean_name or not clean_song1 or not clean_song2:
         st.error("Please fill in Name, Song1, and Song2.")
     else:
+        # Light format hints (not strict)
+        #if "-" not in clean_song1 or "-" not in clean_song2:
+        #    st.warning("Tip: Expected format is roughly `Title - Interpret` (but submission will still be saved).")
+
         ok = append_submission(clean_name, clean_song1, clean_song2)
         if ok:
             st.success("Submitted! ✅")
-
-            # Clear fields after successful submission
-            st.session_state["name"] = ""
-            st.session_state["song1"] = ""
-            st.session_state["song2"] = ""
         else:
-            st.error("Saved locally, but upload to Dropbox failed. Please try again.")
+            st.error("Saved locally, but upload to Dropbox failed. Check Dropbox secrets/path/permissions and try again.")
 
-# Optional: show last submissions (kept on the same page)
+
+# Optional: show latest submissions
 with st.expander("Show latest submissions"):
-    # Try to show the freshest possible view
-    download_from_dropbox(LOCAL_TSV_PATH)
+    download_from_dropbox(LOCAL_TSV_PATH)  # best-effort refresh
     df_preview = load_tsv(LOCAL_TSV_PATH)
+
     if df_preview.empty:
         st.write("No submissions yet.")
     else:
