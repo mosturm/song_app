@@ -159,6 +159,19 @@ with st.expander("Show latest submissions"):
     if df_preview.empty:
         st.write("No submissions yet.")
     else:
-        # Hide Name in the display (but keep it stored in Dropbox)
-        st.dataframe(df_preview[["Song1", "Song2"]].tail(20), use_container_width=True)
+        def title_is_test(s: str) -> bool:
+            s = (s or "").strip()
+            # treat "Test" and "Test - Artist" as "Test"
+            title = s.split("-", 1)[0].strip().lower()
+            return title == "test"
+
+        mask_test = df_preview["Song1"].apply(title_is_test) | df_preview["Song2"].apply(title_is_test)
+        df_preview = df_preview.loc[~mask_test]
+
+        if df_preview.empty:
+            st.write("No submissions yet.")
+        else:
+            # Hide Name in the display (but it’s still stored in Dropbox)
+            st.dataframe(df_preview[["Song1", "Song2"]].tail(20), use_container_width=True)
+
 
