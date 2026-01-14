@@ -159,4 +159,6 @@ with st.expander("Show latest submissions"):
     if df_preview.empty:
         st.write("No submissions yet.")
     else:
-        st.dataframe(df_preview.tail(20), use_container_width=True)
+        # Hide Name in the display (but keep it stored in Dropbox)
+        st.dataframe(df_preview[["Song1", "Song2"]].tail(20), use_container_width=True)
+
